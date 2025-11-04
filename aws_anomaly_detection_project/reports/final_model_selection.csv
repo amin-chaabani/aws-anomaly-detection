@@ -1,0 +1,3 @@
+Model,Validation_F1,Test_F1,Val_Test_Diff,Overfitting,Status
+SVM Tuned (40 trials),0.631578947368421,0.625,0.006578947368421018,No,✅ SELECTED
+SVM + Feature Selection,0.7368,0.4706,0.2663,Yes,❌ REJECTED

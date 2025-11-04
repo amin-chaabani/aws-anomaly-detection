@@ -1,0 +1,70 @@
+{
+  "model_name": "One-Class SVM (Tuned)",
+  "model_type": "OneClassSVM",
+  "sklearn_params": {
+    "kernel": "rbf",
+    "nu": 0.18,
+    "gamma": "scale"
+  },
+  "features": {
+    "n_features": 104,
+    "feature_names": [
+      "cluster_cpu_request_ratio_rolling_min_3_lag_12",
+      "cluster_pod_ratio_rolling_skew_48",
+      "cluster_cpu_request_ratio_rolling_skew_3_rolling_skew_48",
+      "cluster_cpu_request_ratio_rolling_max_3_lag_12",
+      "cluster_cpu_request_ratio_rolling_min_3_lag_24",
+      "cluster_cpu_request_ratio_rolling_min_3_rolling_skew_48",
+      "cluster_cpu_request_ratio_rolling_min_3_is_outlier",
+      "cluster_cpu_request_ratio_rolling_min_3_rolling_kurt_96",
+      "cluster_cpu_request_ratio_rolling_mean_3_lag_24",
+      "day_cos"
+    ],
+    "scaler_used": true
+  },
+  "training": {
+    "n_samples_train": 161,
+    "n_samples_val": 34,
+    "n_samples_test": 35,
+    "n_anomalies_train": 42,
+    "n_anomalies_val": 9,
+    "n_anomalies_test": 9
+  },
+  "optimization": {
+    "framework": "Optuna",
+    "n_trials": 40,
+    "best_trial_number": 8,
+    "objective_metric": "F1-Score"
+  },
+  "performance": {
+    "validation": {
+      "f1_score": 0.631578947368421,
+      "precision": 0.6,
+      "recall": 0.6666666666666666,
+      "accuracy": 0.7941176470588235,
+      "fpr": 0.16,
+      "tp": 6,
+      "fp": 4,
+      "tn": 21,
+      "fn": 3
+    },
+    "test": {
+      "f1_score": 0.625,
+      "precision": 0.7142857142857143,
+      "recall": 0.5555555555555556,
+      "accuracy": 0.8285714285714286,
+      "fpr": 0.07692307692307693,
+      "tp": 5,
+      "fp": 2,
+      "tn": 24,
+      "fn": 4
+    },
+    "generalization": {
+      "val_test_diff": 0.006578947368421018,
+      "overfitting": "No",
+      "stability": "Excellent"
+    }
+  },
+  "timestamp": "2025-11-04T00:43:33.545207",
+  "conclusion": "Best model - No overfitting, stable performance"
+}

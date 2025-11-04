@@ -1,0 +1,26 @@
+{
+  "training_date": "2025-11-03T15:14:06.453129",
+  "n_samples": 230,
+  "n_features": 3,
+  "feature_names": [
+    "cluster_cpu_request_ratio",
+    "cluster_mem_request_ratio",
+    "cluster_pod_ratio"
+  ],
+  "models": {
+    "isolation_forest": {
+      "n_estimators": 100,
+      "contamination": 0.05,
+      "trained": true
+    },
+    "one_class_svm": {
+      "kernel": "rbf",
+      "nu": 0.05,
+      "trained": true
+    },
+    "lstm_autoencoder": {
+      "trained": false,
+      "note": "TensorFlow not available"
+    }
+  }
+}
