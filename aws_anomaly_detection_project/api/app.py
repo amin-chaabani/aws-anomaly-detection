@@ -1,7 +1,8 @@
 """
-AWS Cluster Anomaly Detection API
+Azure Cluster Anomaly Detection API
 
-Flask REST API for real-time anomaly detection in AWS cluster metrics.
+Flask REST API for real-time anomaly detection in Azure cluster metrics.
+Integrates with Alertmanager for automated alert notifications.
 """
 
 import os
@@ -9,13 +10,19 @@ import sys
 import pickle
 import json
 import logging
+import requests
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, List, Any
 
 import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+
+# Add parent directory to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
+from src.feature_engineering import FeatureEngineer
 
 # Configure logging
 logging.basicConfig(
@@ -28,35 +35,40 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Model and artifact paths
+# Configuration
 BASE_DIR = Path(__file__).parent.parent
 MODELS_DIR = BASE_DIR / 'models'
 DATA_DIR = BASE_DIR / 'data'
+
+# Alertmanager configuration
+ALERTMANAGER_URL = os.environ.get('ALERTMANAGER_URL', 'http://alertmanager:9093')
 
 # Global variables for loaded models
 model = None
 scaler = None
 feature_names = None
-hyperparams = None
+model_config = None
+feature_engineer = None
 
 
 def load_artifacts():
     """
     Load all required model artifacts at startup
     """
-    global model, scaler, feature_names, hyperparams
+    global model, scaler, feature_names, model_config, feature_engineer
     
     try:
         logger.info("Loading model artifacts...")
         
-        # Load ensemble model
-        model_path = MODELS_DIR / 'ensemble.pkl'
+        # Load One-Class SVM model
+        model_path = MODELS_DIR / 'one_class_svm_final.pkl'
         if model_path.exists():
             with open(model_path, 'rb') as f:
                 model = pickle.load(f)
-            logger.info("✅ Loaded ensemble model")
+            logger.info("✅ Loaded One-Class SVM model")
         else:
-            logger.warning(f"⚠️ Model not found at {model_path}")
+            logger.error(f"❌ Model not found at {model_path}")
+            return False
         
         # Load scaler
         scaler_path = MODELS_DIR / 'scaler.pkl'
@@ -65,7 +77,8 @@ def load_artifacts():
                 scaler = pickle.load(f)
             logger.info("✅ Loaded scaler")
         else:
-            logger.warning(f"⚠️ Scaler not found at {scaler_path}")
+            logger.error(f"❌ Scaler not found at {scaler_path}")
+            return False
         
         # Load feature names
         feature_names_path = MODELS_DIR / 'feature_names.pkl'
@@ -74,124 +87,149 @@ def load_artifacts():
                 feature_names = pickle.load(f)
             logger.info(f"✅ Loaded {len(feature_names)} feature names")
         else:
-            logger.warning(f"⚠️ Feature names not found at {feature_names_path}")
+            logger.error(f"❌ Feature names not found at {feature_names_path}")
+            return False
         
-        # Load hyperparameters
-        hyperparams_path = MODELS_DIR / 'hyperparameters.pkl'
-        if hyperparams_path.exists():
-            with open(hyperparams_path, 'rb') as f:
-                hyperparams = pickle.load(f)
-            logger.info("✅ Loaded hyperparameters")
+        # Load model configuration
+        config_path = MODELS_DIR / 'final_model_config.json'
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                model_config = json.load(f)
+            logger.info("✅ Loaded model configuration")
         else:
-            logger.warning(f"⚠️ Hyperparameters not found at {hyperparams_path}")
+            logger.warning(f"⚠️ Model config not found at {config_path}")
         
+        # Initialize feature engineer
+        feature_engineer = FeatureEngineer(verbose=False)
+        logger.info("✅ Initialized feature engineer")
+        
+        logger.info("="*60)
         logger.info("All artifacts loaded successfully!")
+        logger.info("="*60)
         return True
         
     except Exception as e:
-        logger.error(f"❌ Error loading artifacts: {str(e)}")
+        logger.error(f"❌ Error loading artifacts: {str(e)}", exc_info=True)
         return False
 
 
-def engineer_features(df):
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Apply feature engineering pipeline
+    Apply feature engineering pipeline to input data
     
     Args:
-        df: DataFrame with base metrics (cluster_cpu_request_ratio, etc.)
+        df: DataFrame with base metrics (cluster_cpu_request_ratio, 
+            cluster_mem_request_ratio, cluster_pod_ratio)
     
     Returns:
         DataFrame with engineered features
     """
-    # Make a copy
-    df_features = df.copy()
-    
-    # Extract base metric columns
-    base_metrics = [col for col in df.columns if 'cluster' in col]
-    
-    # 1. Temporal features
-    if isinstance(df.index, pd.DatetimeIndex):
-        df_features['hour'] = df.index.hour
-        df_features['day_of_week'] = df.index.dayofweek
-        df_features['is_weekend'] = (df.index.dayofweek >= 5).astype(int)
-        df_features['is_business_hours'] = ((df.index.hour >= 9) & (df.index.hour <= 17)).astype(int)
+    try:
+        # Apply feature engineering
+        df_features = feature_engineer.fit_transform(df)
         
-        # Cyclical encoding
-        df_features['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
-        df_features['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
-        df_features['day_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
-        df_features['day_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
-    else:
-        # Default values if no datetime index
-        for col in ['hour', 'day_of_week', 'is_weekend', 'is_business_hours', 
-                    'hour_sin', 'hour_cos', 'day_sin', 'day_cos']:
-            df_features[col] = 0
-    
-    # 2. Rolling statistics (simplified for API - use smaller windows)
-    windows = [3, 6, 12]
-    for metric in base_metrics:
-        for window in windows:
-            df_features[f'{metric}_rolling_mean_{window}'] = df[metric].rolling(window=window, min_periods=1).mean()
-            df_features[f'{metric}_rolling_std_{window}'] = df[metric].rolling(window=window, min_periods=1).std()
-            df_features[f'{metric}_rolling_min_{window}'] = df[metric].rolling(window=window, min_periods=1).min()
-            df_features[f'{metric}_rolling_max_{window}'] = df[metric].rolling(window=window, min_periods=1).max()
-    
-    # 3. Lag features
-    lags = [1, 2, 3]
-    for metric in base_metrics:
-        for lag in lags:
-            df_features[f'{metric}_lag_{lag}'] = df[metric].shift(lag)
-            df_features[f'{metric}_diff_{lag}'] = df[metric] - df[metric].shift(lag)
-    
-    # 4. Cross-metric interactions
-    cpu_col = base_metrics[0]
-    mem_col = base_metrics[1]
-    pod_col = base_metrics[2]
-    
-    df_features['cpu_mem_ratio'] = df[cpu_col] / (df[mem_col] + 1e-6)
-    df_features['cpu_pod_ratio'] = df[cpu_col] / (df[pod_col] + 1e-6)
-    df_features['mem_pod_ratio'] = df[mem_col] / (df[pod_col] + 1e-6)
-    df_features['total_resource_pressure'] = df[cpu_col] + df[mem_col] + df[pod_col]
-    df_features['max_resource_ratio'] = df[[cpu_col, mem_col, pod_col]].max(axis=1)
-    df_features['min_resource_ratio'] = df[[cpu_col, mem_col, pod_col]].min(axis=1)
-    
-    # Fill NaN values
-    df_features = df_features.fillna(0)
-    
-    # Replace inf values
-    df_features = df_features.replace([np.inf, -np.inf], 0)
-    
-    return df_features
+        # Check for missing features and fill with default values
+        missing_features = set(feature_names) - set(df_features.columns)
+        if missing_features:
+            logger.warning(f"Missing {len(missing_features)} features, filling with 0")
+            logger.debug(f"Missing features: {list(missing_features)[:10]}...")
+            for feature in missing_features:
+                df_features[feature] = 0
+        
+        # Select only the features used by the model
+        df_selected = df_features[feature_names]
+        
+        return df_selected
+        
+    except Exception as e:
+        logger.error(f"Error in feature engineering: {str(e)}", exc_info=True)
+        raise
 
 
-def normalize_field_names(data):
+def normalize_field_names(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normalize field names to match expected format
+    Normalize field names in request data to handle variations
     
-    Handles variations like:
-    - cpu_ratio -> cluster_cpu_request_ratio
-    - mem_ratio -> cluster_mem_request_ratio
-    - pod_ratio -> cluster_pod_ratio
+    Args:
+        data: Dictionary with metric data
+        
+    Returns:
+        Dictionary with normalized field names
     """
-    normalized = {}
-    
     field_mapping = {
+        # CPU variants
         'cpu_ratio': 'cluster_cpu_request_ratio',
-        'mem_ratio': 'cluster_mem_request_ratio',
-        'pod_ratio': 'cluster_pod_ratio',
         'cpu': 'cluster_cpu_request_ratio',
-        'memory': 'cluster_mem_request_ratio',
+        'cluster_cpu_ratio': 'cluster_cpu_request_ratio',
+        
+        # Memory variants
+        'mem_ratio': 'cluster_mem_request_ratio',
+        'memory_ratio': 'cluster_mem_request_ratio',
         'mem': 'cluster_mem_request_ratio',
+        'memory': 'cluster_mem_request_ratio',
+        'cluster_memory_ratio': 'cluster_mem_request_ratio',
+        
+        # Pod variants
+        'pod_ratio': 'cluster_pod_ratio',
         'pod': 'cluster_pod_ratio',
-        'pods': 'cluster_pod_ratio'
+        'pods': 'cluster_pod_ratio',
+        'cluster_pods_ratio': 'cluster_pod_ratio'
     }
     
+    normalized = {}
     for key, value in data.items():
         # Check if key needs normalization
         normalized_key = field_mapping.get(key, key)
         normalized[normalized_key] = value
     
     return normalized
+
+
+def send_alert_to_alertmanager(alert_data: Dict[str, Any]) -> bool:
+    """
+    Send alert to Alertmanager
+    
+    Args:
+        alert_data: Dictionary containing alert information
+    
+    Returns:
+        True if alert sent successfully, False otherwise
+    """
+    try:
+        # Format alert for Alertmanager
+        alert_payload = [{
+            "labels": {
+                "alertname": "AzureClusterAnomaly",
+                "severity": alert_data.get('severity', 'warning'),
+                "cluster": alert_data.get('cluster', 'unknown'),
+                "service": "anomaly-detection-api"
+            },
+            "annotations": {
+                "summary": alert_data.get('summary', 'Anomaly detected in Azure cluster metrics'),
+                "description": alert_data.get('description', ''),
+                "timestamp": alert_data.get('timestamp', datetime.now().isoformat()),
+                "anomaly_score": str(alert_data.get('anomaly_score', 'N/A')),
+                "cpu_ratio": str(alert_data.get('cpu_ratio', 'N/A')),
+                "mem_ratio": str(alert_data.get('mem_ratio', 'N/A')),
+                "pod_ratio": str(alert_data.get('pod_ratio', 'N/A'))
+            }
+        }]
+        
+        # Send to Alertmanager (v2 API)
+        url = f"{ALERTMANAGER_URL}/api/v2/alerts"
+        response = requests.post(url, json=alert_payload, timeout=5)
+        
+        if response.status_code == 200:
+            logger.info(f"✅ Alert sent to Alertmanager: {alert_data['summary']}")
+            return True
+        else:
+            logger.warning(f"⚠️ Failed to send alert. Status: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Error sending alert to Alertmanager: {str(e)}")
+        return False
+
 
 
 # ============================================================================
@@ -204,7 +242,7 @@ def index():
     Service information endpoint
     """
     return jsonify({
-        'service': 'AWS Cluster Anomaly Detection API',
+        'service': 'Azure Cluster Anomaly Detection API',
         'version': '1.0.0',
         'status': 'running',
         'endpoints': {
@@ -218,25 +256,33 @@ def index():
     })
 
 
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """
     Health check endpoint
+    
+    Returns:
+        JSON response with health status
     """
     status = {
-        'status': 'healthy',
+        'status': 'healthy' if model is not None else 'unhealthy',
         'timestamp': datetime.now().isoformat(),
         'model_loaded': model is not None,
         'scaler_loaded': scaler is not None,
-        'features_loaded': feature_names is not None
+        'features_loaded': feature_names is not None,
+        'n_features': len(feature_names) if feature_names else 0
     }
     
-    if not all([model, scaler, feature_names]):
-        status['status'] = 'degraded'
-        status['message'] = 'Some artifacts not loaded. Run training notebooks first.'
-        return jsonify(status), 503
+    if model_config:
+        status['model_info'] = {
+            'name': model_config.get('model_name'),
+            'type': model_config.get('model_type'),
+            'test_f1_score': model_config.get('performance', {}).get('test', {}).get('f1_score')
+        }
     
-    return jsonify(status), 200
+    return jsonify(status), 200 if status['status'] == 'healthy' else 503
 
 
 @app.route('/model_info', methods=['GET'])
@@ -267,7 +313,8 @@ def model_info():
             'f1_score': 0.88,
             'false_positive_rate': 0.032
         },
-        'hyperparameters': hyperparams if hyperparams else {}
+        'hyperparameters': model_config if model_config else {},
+        'timestamp': datetime.now().isoformat()
     }
     
     return jsonify(info), 200
@@ -441,69 +488,107 @@ def batch_predict():
         if not isinstance(samples, list) or len(samples) == 0:
             return jsonify({'error': 'Samples must be a non-empty list'}), 400
         
-        # Process each sample
-        predictions = []
-        anomaly_count = 0
+        logger.info(f"Processing batch of {len(samples)} samples")
         
-        for idx, sample in enumerate(samples):
-            # Normalize field names
-            sample = normalize_field_names(sample)
-            
-            # Validate required fields
-            required_fields = ['cluster_cpu_request_ratio', 'cluster_mem_request_ratio', 'cluster_pod_ratio']
+        # IMPORTANT: Process ALL samples together for proper feature engineering
+        # This allows rolling windows, lags, and temporal features to be calculated correctly
+        
+        # Normalize all samples
+        normalized_samples = [normalize_field_names(s) for s in samples]
+        
+        # Validate required fields
+        required_fields = ['cluster_cpu_request_ratio', 'cluster_mem_request_ratio', 'cluster_pod_ratio']
+        
+        # Create DataFrame from ALL samples at once
+        df_data = {
+            'cluster_cpu_request_ratio': [],
+            'cluster_mem_request_ratio': [],
+            'cluster_pod_ratio': []
+        }
+        
+        timestamps = []
+        valid_indices = []
+        
+        for idx, sample in enumerate(normalized_samples):
             missing_fields = [f for f in required_fields if f not in sample]
             
             if missing_fields:
-                predictions.append({
-                    'index': idx,
-                    'error': 'Missing required fields',
-                    'missing': missing_fields
-                })
+                logger.warning(f"Sample {idx} missing fields: {missing_fields}")
                 continue
             
-            # Create DataFrame
-            df = pd.DataFrame({
-                required_fields[0]: [sample[required_fields[0]]],
-                required_fields[1]: [sample[required_fields[1]]],
-                required_fields[2]: [sample[required_fields[2]]]
-            })
-            
-            # Engineer features
-            df_features = engineer_features(df)
-            
-            # Select features
-            available_features = [f for f in feature_names if f in df_features.columns]
-            missing_features = set(feature_names) - set(available_features)
-            
+            df_data['cluster_cpu_request_ratio'].append(sample['cluster_cpu_request_ratio'])
+            df_data['cluster_mem_request_ratio'].append(sample['cluster_mem_request_ratio'])
+            df_data['cluster_pod_ratio'].append(sample['cluster_pod_ratio'])
+            timestamps.append(sample.get('timestamp', None))
+            valid_indices.append(idx)
+        
+        if len(df_data['cluster_cpu_request_ratio']) == 0:
+            return jsonify({'error': 'No valid samples found'}), 400
+        
+        # Create DataFrame with all samples
+        df = pd.DataFrame(df_data)
+        logger.info(f"Created DataFrame with {len(df)} valid samples")
+        
+        # Engineer features for entire batch
+        df_features = engineer_features(df)
+        logger.info(f"Feature engineering complete. Shape: {df_features.shape}")
+        
+        # Select features - fill missing ones with 0
+        missing_features = set(feature_names) - set(df_features.columns)
+        if missing_features:
+            logger.warning(f"Missing {len(missing_features)} features, filling with 0")
             for feature in missing_features:
                 df_features[feature] = 0
-            
-            X = df_features[feature_names]
-            X_scaled = scaler.transform(X)
-            
-            # Predict
-            prediction = model.predict(X_scaled)[0]
-            is_anomaly = prediction == -1
+        
+        X = df_features[feature_names]
+        X_scaled = scaler.transform(X)
+        
+        # Predict for all samples at once
+        predictions_array = model.predict(X_scaled)
+        logger.info(f"Predictions complete. Shape: {predictions_array.shape}")
+        
+        # Format results
+        predictions = []
+        anomaly_count = 0
+        
+        for i, (idx, pred) in enumerate(zip(valid_indices, predictions_array)):
+            is_anomaly = pred == -1
             
             if is_anomaly:
                 anomaly_count += 1
+                
+                # Send alert to Alertmanager for each anomaly
+                sample = normalized_samples[idx]
+                alert_data = {
+                    'severity': 'warning' if anomaly_count <= 5 else 'critical',
+                    'cluster': 'azure-production',
+                    'summary': f'Anomaly detected in Azure cluster metrics (batch {anomaly_count}/{len(valid_indices)})',
+                    'description': f'High resource usage detected at {timestamps[i]}',
+                    'timestamp': timestamps[i] if timestamps[i] else datetime.now().isoformat(),
+                    'cpu_ratio': sample.get('cluster_cpu_request_ratio', 'N/A'),
+                    'mem_ratio': sample.get('cluster_mem_request_ratio', 'N/A'),
+                    'pod_ratio': sample.get('cluster_pod_ratio', 'N/A'),
+                    'anomaly_score': -1.0  # One-Class SVM predicts -1 for anomalies
+                }
+                send_alert_to_alertmanager(alert_data)
             
             predictions.append({
                 'index': idx,
                 'is_anomaly': bool(is_anomaly),
                 'prediction': 'ANOMALY' if is_anomaly else 'NORMAL',
-                'timestamp': sample.get('timestamp', None)
+                'timestamp': timestamps[i]
             })
         
         # Summary
         summary = {
             'total': len(samples),
+            'valid': len(valid_indices),
             'anomalies': anomaly_count,
-            'normal': len(samples) - anomaly_count,
-            'anomaly_rate': round(anomaly_count / len(samples) * 100, 2)
+            'normal': len(valid_indices) - anomaly_count,
+            'anomaly_rate': round(anomaly_count / len(valid_indices) * 100, 2) if len(valid_indices) > 0 else 0
         }
         
-        logger.info(f"Batch prediction: {len(samples)} samples, {anomaly_count} anomalies")
+        logger.info(f"Batch prediction complete: {len(valid_indices)} samples, {anomaly_count} anomalies ({summary['anomaly_rate']}%)")
         
         # Return both 'predictions' and 'results' for compatibility
         return jsonify({

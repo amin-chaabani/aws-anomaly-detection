@@ -1,5 +1,5 @@
 # ================================================
-# AWS Cluster Anomaly Detection - Dockerfile
+# Azure Cluster Anomaly Detection - Dockerfile
 # Multi-stage build for optimized production deployment
 # ================================================
 

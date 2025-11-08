@@ -103,13 +103,15 @@ class FeatureEngineer:
                 df[f'{metric}_rolling_median_{window}'] = df[metric].rolling(
                     window=window, min_periods=1).median()
                 
-                # Skewness
+                # Skewness (require min 3 points or window size, whichever is smaller)
+                skew_min_periods = min(3, window)
                 df[f'{metric}_rolling_skew_{window}'] = df[metric].rolling(
-                    window=window, min_periods=3).skew()
+                    window=window, min_periods=skew_min_periods).skew()
                 
-                # Kurtosis
+                # Kurtosis (require min 4 points or window size, whichever is smaller)
+                kurt_min_periods = min(4, window)
                 df[f'{metric}_rolling_kurt_{window}'] = df[metric].rolling(
-                    window=window, min_periods=4).kurt()
+                    window=window, min_periods=kurt_min_periods).kurt()
         
         # Fill NaN values
         rolling_cols = [col for col in df.columns if 'rolling' in col]

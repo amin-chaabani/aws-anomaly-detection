@@ -1,0 +1,113 @@
+global:
+  resolve_timeout: 5m
+  # SMTP configuration for email alerts
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_from: 'mohamedamine.chaabani@esprit.tn'
+  smtp_auth_username: 'mohamedamine.chaabani@esprit.tn'
+  smtp_auth_password: 'drekirjuyzkn pyoo'
+  smtp_require_tls: true
+
+# The root route with all parameters, which are inherited by child routes if not set
+route:
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'email-notifications'
+  
+  routes:
+    # Route for critical anomalies
+    - match:
+        severity: critical
+      receiver: 'email-notifications-critical'
+      repeat_interval: 30m
+      
+    # Route for warning anomalies
+    - match:
+        severity: warning
+      receiver: 'email-notifications'
+      repeat_interval: 1h
+      
+    # Route for info/test alerts
+    - match:
+        severity: info
+      receiver: 'email-notifications'
+      repeat_interval: 24h
+
+receivers:
+  - name: 'email-notifications'
+    email_configs:
+      - to: 'mohamedamine.chaabani@esprit.tn, aminchaabeni2000@gmail.com'
+        from: 'mohamedamine.chaabani@esprit.tn'
+        smarthost: 'smtp.gmail.com:587'
+        auth_username: 'mohamedamine.chaabani@esprit.tn'
+        auth_password: 'drekirjuyzkn pyoo'
+        headers:
+          Subject: '[WARNING] Azure Cluster Anomaly Detected'
+        html: |
+          <h2>⚠️ Azure Cluster Anomaly Alert</h2>
+          <p><strong>Alert:</strong> {{ .GroupLabels.alertname }}</p>
+          <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
+          <p><strong>Cluster:</strong> {{ .CommonLabels.cluster }}</p>
+          <p><strong>Service:</strong> {{ .CommonLabels.service }}</p>
+          <hr>
+          <h3>Details:</h3>
+          {{ range .Alerts }}
+          <ul>
+            <li><strong>Summary:</strong> {{ .Annotations.summary }}</li>
+            <li><strong>Description:</strong> {{ .Annotations.description }}</li>
+            <li><strong>Timestamp:</strong> {{ .Annotations.timestamp }}</li>
+            <li><strong>Anomaly Score:</strong> {{ .Annotations.anomaly_score }}</li>
+            <li><strong>CPU Ratio:</strong> {{ .Annotations.cpu_ratio }}</li>
+            <li><strong>Memory Ratio:</strong> {{ .Annotations.mem_ratio }}</li>
+            <li><strong>Pod Ratio:</strong> {{ .Annotations.pod_ratio }}</li>
+          </ul>
+          {{ end }}
+          <hr>
+          <p><em>This is an automated alert from the Azure Cluster Anomaly Detection System.</em></p>
+  
+  - name: 'email-notifications-critical'
+    email_configs:
+      - to: 'mohamedamine.chaabani@esprit.tn, aminchaabeni2000@gmail.com'
+        from: 'mohamedamine.chaabani@esprit.tn'
+        smarthost: 'smtp.gmail.com:587'
+        auth_username: 'mohamedamine.chaabani@esprit.tn'
+        auth_password: 'drekirjuyzkn pyoo'
+        headers:
+          Subject: '[CRITICAL] Azure Cluster Anomaly Detected - IMMEDIATE ACTION REQUIRED'
+        html: |
+          <h2>🚨 CRITICAL Azure Cluster Anomaly Alert 🚨</h2>
+          <p style="color: red;"><strong>IMMEDIATE ACTION REQUIRED</strong></p>
+          <p><strong>Alert:</strong> {{ .GroupLabels.alertname }}</p>
+          <p><strong>Severity:</strong> <span style="color: red;">{{ .CommonLabels.severity }}</span></p>
+          <p><strong>Cluster:</strong> {{ .CommonLabels.cluster }}</p>
+          <p><strong>Service:</strong> {{ .CommonLabels.service }}</p>
+          <hr>
+          <h3>Details:</h3>
+          {{ range .Alerts }}
+          <ul>
+            <li><strong>Summary:</strong> {{ .Annotations.summary }}</li>
+            <li><strong>Description:</strong> {{ .Annotations.description }}</li>
+            <li><strong>Timestamp:</strong> {{ .Annotations.timestamp }}</li>
+            <li><strong>Anomaly Score:</strong> <strong>{{ .Annotations.anomaly_score }}</strong></li>
+            <li><strong>CPU Ratio:</strong> {{ .Annotations.cpu_ratio }}</li>
+            <li><strong>Memory Ratio:</strong> {{ .Annotations.mem_ratio }}</li>
+            <li><strong>Pod Ratio:</strong> {{ .Annotations.pod_ratio }}</li>
+          </ul>
+          {{ end }}
+          <hr>
+          <p><strong>Recommended Actions:</strong></p>
+          <ol>
+            <li>Check cluster resource utilization immediately</li>
+            <li>Review recent deployments or configuration changes</li>
+            <li>Verify all services are operating normally</li>
+            <li>Consider scaling resources if necessary</li>
+          </ol>
+          <p><em>This is an automated critical alert from the Azure Cluster Anomaly Detection System.</em></p>
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'cluster']
